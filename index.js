@@ -1,4 +1,3 @@
-const express = require('express');
 const {
     default: makeWASocket,
     useMultiFileAuthState,
@@ -10,31 +9,81 @@ const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
 
-const app = express();
-const PORT = process.env.PORT || 20594;
+module.exports = {
+    command: 'pair',
+    execute: async (sock, msg, args) => {
+        const from = msg.key.remoteJid;
+        let phoneNumber = args[0] ? args[0].replace(/[^0-9]/g, '') : '';
 
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+        if (!phoneNumber) {
+            return await sock.sendMessage(from, {
+                text: '✦ ꜱᴀᴊɪ̄ɪ̄ x ꜰᴀᴛɪ̄ɪ̄ ᴘᴀɪʀɪɴɢ ✦\n\n> ⚠️ *Please provide a valid phone number!*\n\n> 💡 *Example:* `.pair 923306437897`'
+            }, { quoted: msg });
+        }
 
-// Dynamic Plugins Loader
-const commands = new Map();
-const pluginsDir = path.join(__dirname, 'plugins');
+        await sock.sendMessage(from, {
+            text: `⌛ ɢᴇɴᴇʀᴀᴛɪɴɢ ᴘᴀɪʀɪɴɢ ᴄᴏᴅᴇ...\n\n📱 *Number:* ${phoneNumber}\n✨ *ꜱᴀᴊɪ̄ɪ̄ x ꜰᴀᴛɪ̄ɪ̄ Network Processing...*`
+        }, { quoted: msg });
 
-if (fs.existsSync(pluginsDir)) {
-    const pluginFiles = fs.readdirSync(pluginsDir).filter(file => file.endsWith('.js'));
-    for (const file of pluginFiles) {
+        const sessionFolder = path.join(__dirname, `../temp_session_${Date.now()}`);
+
         try {
-            const plugin = require(path.join(pluginsDir, file));
-            if (plugin.command && plugin.execute) {
-                commands.set(plugin.command, plugin.execute);
+            const { state, saveCreds } = await useMultiFileAuthState(sessionFolder);
+
+            const pairSock = makeWASocket({
+                auth: {
+                    creds: state.creds,
+                    keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
+                },
+                printQRInTerminal: false,
+                logger: pino({ level: 'fatal' }),
+                browser: Browsers.ubuntu('Chrome')
+            });
+
+            pairSock.ev.on('creds.update', saveCreds);
+
+            pairSock.ev.on('connection.update', async (update) => {
+                const { connection } = update;
+                if (connection === 'open') {
+                    await delay(3000);
+                    
+                    const credsFilePath = path.join(sessionFolder, 'creds.json');
+                    if (fs.existsSync(credsFilePath)) {
+                        const credsData = fs.readFileSync(credsFilePath);
+                        const base64Session = Buffer.from(credsData).toString('base64');
+                        const sessionId = `BROKEN-MD~${base64Session}`;
+
+                        await sock.sendMessage(from, {
+                            text: `✦ ꜱᴀᴊɪ̄ɪ̄ x ꜰᴀᴛɪ̄ɪ̄ ꜱᴇꜱꜱɪᴏɴ ɪᴅ ✦\n\n🔑 *Session ID Created Successfully!*\n\n\`\`\`${sessionId}\`\`\`\n\n> ⚠️ *Keep this ID secret! Do not share it with anyone.*`
+                        }, { quoted: msg });
+                    }
+
+                    await pairSock.logout();
+                    if (fs.existsSync(sessionFolder)) {
+                        fs.rmSync(sessionFolder, { recursive: true, force: true });
+                    }
+                }
+            });
+
+            await delay(3000);
+            let code = await pairSock.requestPairingCode(phoneNumber);
+            code = code?.match(/.{1,4}/g)?.join('-') || code;
+
+            await sock.sendMessage(from, {
+                text: `✦───────────────✦\n   ▶  ❚❚  🔊  02:45  ⟳\n✦───────────────✦\n\n📟 *Pairing Code:* *${code}*\n\n> 📲 Open WhatsApp > Linked Devices > Link with Phone Number and enter this code.`
+            }, { quoted: msg });
+
+        } catch (error) {
+            console.error('Pairing Plugin Error:', error);
+            if (fs.existsSync(sessionFolder)) {
+                fs.rmSync(sessionFolder, { recursive: true, force: true });
             }
-        } catch (e) {
-            console.error(`Error loading plugin ${file}:`, e);
+            await sock.sendMessage(from, {
+                text: '❌ ᴘᴀɪʀɪɴɢ ꜰᴀɪʟᴇᴅ!\n\n> Failed to generate pairing code. Please make sure the number includes country code.'
+            }, { quoted: msg });
         }
     }
-}
-
-// Pairing Web Interface
+};// Pairing Web Interface
 app.get('/', (req, res) => {
     res.send(`
     <!DOCTYPE html>
