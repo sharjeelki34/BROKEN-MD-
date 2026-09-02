@@ -16,7 +16,25 @@ const PORT = process.env.PORT || 20594;
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Main Web UI
+// Dynamic Plugins Loader
+const commands = new Map();
+const pluginsDir = path.join(__dirname, 'plugins');
+
+if (fs.existsSync(pluginsDir)) {
+    const pluginFiles = fs.readdirSync(pluginsDir).filter(file => file.endsWith('.js'));
+    for (const file of pluginFiles) {
+        try {
+            const plugin = require(path.join(pluginsDir, file));
+            if (plugin.command && plugin.execute) {
+                commands.set(plugin.command, plugin.execute);
+            }
+        } catch (e) {
+            console.error(`Error loading plugin ${file}:`, e);
+        }
+    }
+}
+
+// Pairing Web Interface
 app.get('/', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -25,16 +43,98 @@ app.get('/', (req, res) => {
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>BROKEN MD - Web Pairing Panel</title>
-      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #0b0e14; color: #e2e8f0; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        body { font-family: 'Segoe UI', Roboto, sans-serif; background-color: #0b0e14; color: #e2e8f0; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
         .container { background: #131926; border: 1px solid #1e293b; border-radius: 20px; padding: 35px 25px; width: 100%; max-width: 400px; text-align: center; box-shadow: 0 15px 35px rgba(0, 0, 0, 0.6); }
         .avatar { width: 110px; height: 110px; border-radius: 50%; object-fit: cover; margin-bottom: 20px; border: 3px solid #3b82f6; box-shadow: 0 0 20px rgba(59, 130, 246, 0.4); }
-        h1 { font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 8px; letter-spacing: 0.5px; }
+        h1 { font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 8px; }
         p.subtitle { font-size: 13px; color: #94a3b8; margin-bottom: 25px; }
-        .input-group { margin-bottom: 20px; text-align: left; }
-        .input-group label { display: block; font-size: 12px; color: #cbd5e1; margin-bottom: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+        input[type="text"] { width: 100%; padding: 14px 16px; border-radius: 10px; border: 1px solid #334155; background: #0b0e14; color: #fff; font-size: 15px; outline: none; margin-bottom: 15px; text-align: center; }
+        button { width: 100%; padding: 14px; border: none; border-radius: 10px; background: #2563eb; color: #fff; font-weight: 600; font-size: 16px; cursor: pointer; }
+        .code-container { margin-top: 25px; padding: 18px; background: #0b0e14; border-radius: 12px; border: 1px dashed #3b82f6; }
+        .code-value { font-size: 24px; font-weight: 800; color: #4ade80; letter-spacing: 3px; font-family: monospace; }
+        .error-msg { margin-top: 20px; color: #f87171; font-size: 13px; font-weight: 600; background: rgba(239, 68, 68, 0.1); padding: 10px; border-radius: 8px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <img src="https://i.imgur.com/1xAJKoA.jpeg" alt="BROKEN MD Logo" class="avatar">
+        <h1>BROKEN MD</h1>
+        <p class="subtitle">Enter WhatsApp number with country code</p>
+        
+        <form action="/pair" method="POST">
+          <input type="text" name="number" placeholder="e.g. 923306437897" required />
+          <button type="submit">Generate Code</button>
+        </form>
+
+        ${req.query.code ? `<div class="code-container"><div class="code-value">${req.query.code}</div></div>` : ''}
+        ${req.query.error ? `<div class="error-msg">${req.query.error}</div>` : ''}
+      </div>
+    </body>
+    </html>
+    `);
+});
+
+// Dynamic Pairing Code Backend
+app.post('/pair', async (req, res) => {
+    let num = req.body.number;
+    if (!num) return res.redirect('/?error=Phone number is required');
+
+    num = num.replace(/[^0-9]/g, '');
+    const sessionDir = path.join(__dirname, 'session');
+
+    try {
+        if (fs.existsSync(sessionDir)) {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+
+        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+
+        const sock = makeWASocket({
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
+            },
+            printQRInTerminal: false,
+            logger: pino({ level: 'fatal' }),
+            browser: Browsers.ubuntu('Chrome')
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+            const msg = messages[0];
+            if (!msg.message || msg.key.fromMe) return;
+
+            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+            const prefix = '.';
+            
+            if (text.startsWith(prefix)) {
+                const args = text.slice(prefix.length).trim().split(/ +/);
+                const cmdName = args.shift().toLowerCase();
+
+                if (commands.has(cmdName)) {
+                    await commands.get(cmdName)(sock, msg, args);
+                }
+            }
+        });
+
+        await delay(3000);
+        let code = await sock.requestPairingCode(num);
+        code = code?.match(/.{1,4}/g)?.join('-') || code;
+
+        return res.redirect(`/?code=${code}`);
+    } catch (err) {
+        console.error('Pairing Error:', err);
+        return res.redirect('/?error=Failed to fetch pairing code. Please try again.');
+    }
+});
+
+app.listen(PORT, "0.0.0.0", () => {
+    console.log(`⚡ BROKEN MD Web Panel running on port ${PORT}`);
+});        .input-group label { display: block; font-size: 12px; color: #cbd5e1; margin-bottom: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
         input[type="text"] { width: 100%; padding: 14px 16px; border-radius: 10px; border: 1px solid #334155; background: #0b0e14; color: #fff; font-size: 15px; outline: none; transition: border-color 0.2s; text-align: center; }
         input[type="text"]:focus { border-color: #3b82f6; }
         button { width: 100%; padding: 14px; border: none; border-radius: 10px; background: #2563eb; color: #fff; font-weight: 600; font-size: 16px; cursor: pointer; transition: background 0.2s; display: flex; justify-content: center; align-items: center; gap: 8px; }
