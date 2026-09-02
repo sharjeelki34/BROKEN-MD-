@@ -1,25 +1,110 @@
 const express = require("express");
 const pino = require("pino");
+const fs = require("fs");
+const path = require("path");
 const {
   default: makeWASocket,
   useMultiFileAuthState,
-  DisconnectReason
+  DisconnectReason,
+  delay
 } = require("@whiskeysockets/baileys");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Owner Number Configuration
+const OWNER_NUMBER = "923306437897";
+
+// 1. Web UI - Pairing Page Link
 app.get("/", (req, res) => {
-  res.send("⚡ BROKEN MD is running!");
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>⚡ BROKEN MD - Pairing Panel</title>
+      <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: #1e293b; padding: 30px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); text-align: center; width: 330px; border: 1px solid #334155; }
+        h2 { color: #38bdf8; margin-bottom: 8px; font-size: 24px; }
+        p { font-size: 13px; color: #94a3b8; margin-bottom: 20px; }
+        input { width: 90%; padding: 12px; margin-bottom: 15px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; font-size: 16px; text-align: center; outline: none; }
+        input:focus { border-color: #38bdf8; }
+        button { width: 98%; padding: 12px; border: none; border-radius: 6px; background: #22c55e; color: #fff; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #16a34a; }
+        .code-box { margin-top: 20px; padding: 15px; background: #0f172a; border-radius: 6px; border: 1px dashed #38bdf8; font-size: 22px; font-weight: bold; color: #facc15; letter-spacing: 3px; word-break: break-all; }
+        .footer { margin-top: 15px; font-size: 12px; color: #64748b; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h2>⚡ BROKEN MD</h2>
+        <p>Country code ke sath number likhein (e.g. 923306437897)</p>
+        <form action="/pair" method="POST">
+          <input type="text" name="number" placeholder="923xxxxxxxxx" required />
+          <button type="submit">Get Pairing Code</button>
+        </form>
+        ${req.query.code ? `<div class="code-box">${req.query.code}</div>` : ''}
+        ${req.query.error ? `<p style="color: #ef4444; margin-top: 15px; font-weight: bold;">${req.query.error}</p>` : ''}
+        <div class="footer">Owner: +${OWNER_NUMBER}</div>
+      </div>
+    </body>
+    </html>
+  `);
 });
 
-app.listen(PORT, () => {
-  console.log(`Web server running on port ${PORT}`);
+// 2. API Endpoint - Generate Pairing Code
+app.post("/pair", async (req, res) => {
+  let num = req.body.number;
+  if (!num) return res.redirect("/?error=Number is required");
+
+  // Number Format Cleaning
+  num = num.replace(/[^0-9]/g, "");
+
+  // Create temporary session directory
+  const tempSessionDir = path.join(__dirname, `./temp_sessions/session_${Date.now()}`);
+
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState(tempSessionDir);
+    const sock = makeWASocket({
+      auth: state,
+      logger: pino({ level: "silent" }),
+      printQRInTerminal: false
+    });
+
+    sock.ev.on("creds.update", saveCreds);
+
+    await delay(3000); // Socket initialization delay
+
+    if (!sock.authState.creds.registered) {
+      const code = await sock.requestPairingCode(num);
+      res.redirect(`/?code=${code}`);
+    } else {
+      res.redirect("/?error=Already Registered");
+    }
+
+    // Dynamic temp session cleanup after 2 minutes
+    setTimeout(() => {
+      try {
+        sock.ws.close();
+        fs.rmSync(tempSessionDir, { recursive: true, force: true });
+      } catch (e) {}
+    }, 120000);
+
+  } catch (err) {
+    console.log("Pairing Error:", err);
+    res.redirect("/?error=Failed to generate code. Try again.");
+  }
 });
 
+// 3. Main Bot Process
 async function startBot() {
-  const { state, saveCreds } =
-    await useMultiFileAuthState("./session");
+  const { state, saveCreds } = await useMultiFileAuthState("./session");
 
   const sock = makeWASocket({
     auth: state,
@@ -33,12 +118,11 @@ async function startBot() {
     const { connection, lastDisconnect } = update;
 
     if (connection === "open") {
-      console.log("✅ BROKEN MD connected!");
+      console.log("✅ BROKEN MD connected successfully!");
     }
 
     if (connection === "close") {
-      const code =
-        lastDisconnect?.error?.output?.statusCode;
+      const code = lastDisconnect?.error?.output?.statusCode;
 
       if (code !== DisconnectReason.loggedOut) {
         console.log("🔄 Reconnecting...");
@@ -49,26 +133,7 @@ async function startBot() {
     }
   });
 
-  // Pairing code
-  if (!state.creds.registered) {
-    const number = process.env.BOT_NUMBER;
-
-    if (!number) {
-      console.log(
-        "⚠️ BOT_NUMBER environment variable set karo."
-      );
-      return;
-    }
-
-    const pairingCode =
-      await sock.requestPairingCode(number);
-
-    console.log("================================");
-    console.log("🔐 PAIRING CODE:", pairingCode);
-    console.log("================================");
-  }
-
-  // Commands
+  // Commands Handling
   sock.ev.on("messages.upsert", async ({ messages }) => {
     try {
       const msg = messages[0];
@@ -93,9 +158,16 @@ async function startBot() {
         await sock.sendMessage(jid, {
           text:
             "╭━━〔 ⚡ BROKEN MD 〕━━╮\n" +
-            "┃ ✅ Bot Online\n" +
-            "┃ 🚀 System Active\n" +
+            `┃ ✅ Bot Status: Online\n` +
+            `┃ 👑 Owner: +${OWNER_NUMBER}\n` +
+            "┃ 🚀 System: Active\n" +
             "╰━━━━━━━━━━━━━━━━╯"
+        });
+      }
+
+      if (command === ".owner") {
+        await sock.sendMessage(jid, {
+          text: `👑 *Bot Owner Contact:*\nhttps://wa.me/${OWNER_NUMBER}`
         });
       }
 
@@ -104,9 +176,10 @@ async function startBot() {
           text:
             "╭━━〔 ⚡ BROKEN MD 〕━━╮\n" +
             "┃\n" +
-            "┃ .ping\n" +
-            "┃ .alive\n" +
-            "┃ .menu\n" +
+            "┃ 📌 .ping  - Speed test\n" +
+            "┃ 📌 .alive - Check status\n" +
+            "┃ 📌 .owner - Owner info\n" +
+            "┃ 📌 .menu  - List commands\n" +
             "┃\n" +
             "╰━━━━━━━━━━━━━━━━╯"
         });
@@ -117,4 +190,10 @@ async function startBot() {
   });
 }
 
+// Web server start
+app.listen(PORT, () => {
+  console.log(`⚡ BROKEN MD Pairing Web Panel running on port ${PORT}`);
+});
+
+// Bot start
 startBot();
