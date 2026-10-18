@@ -1,127 +1,27 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
+const pino = require('pino');
+const { 
+    default: makeWASocket, 
+    useMultiFileAuthState, 
+    delay, 
+    makeCacheableSignalKeyStore, 
+    Browsers, 
+    DisconnectReason 
+} = require('@whiskeysockets/baileys');
+
 const app = express();
+const PORT = process.env.PORT || 3000;
+const OWNER_NUMBER = "923306437897";
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Pairing code API endpoint
-app.get('/pair', async (req, res) => {
-    let phone = req.query.number;
-    if (!phone) return res.status(400).send({ error: "Phone number is required" });
-
-    // Non-digits ko saf karna
-    phone = phone.replace(/[^0-9]/g, '');
-
-    try {
-        // Agar aap Baileys use kar rahe hain:
-        if (!sock.authState.creds.registered) {
-            let code = await sock.requestPairingCode(phone);
-            code = code?.match(/.{1,4}/g)?.join("-") || code;
-            return res.send({ code: code });
-        } else {
-            return res.send({ error: "Device is already registered/linked!" });
-        }
-    } catch (error) {
-        console.error(error);
-        return res.status(500).send({ error: "Failed to generate pairing code" });
-    }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-er" placeholder="e.g. 923306437897" required />
-          </div>
-          <button type="submit">
-            <i class="fa-solid fa-code"></i> Generate Code
-          </button>
-        </form>
-
-        ${req.query.code ? `
-          <div class="code-container">
-            <div class="code-title">Your Pairing Code</div>
-            <div class="code-value">${req.query.code}</div>
-          </div>
-        ` : ''}
-
-        ${req.query.error ? `
-          <div class="error-msg">${req.query.error}</div>
-        ` : ''}
-
-        <div class="footer">
-          Powered by BROKEN MD &bull; Bot-Hosting
-        </div>
-      </div>
-    </body>
-    </html>
-    `);
-});
-
-// Dynamic Pairing Code Backend
-app.post('/pair', async (req, res) => {
-    let num = req.body.number;
-    if (!num) return res.redirect('/?error=Phone number is required');
-
-    num = num.replace(/[^0-9]/g, '');
-    const sessionDir = path.join(__dirname, 'session');
-
-    try {
-        if (fs.existsSync(sessionDir)) {
-            fs.rmSync(sessionDir, { recursive: true, force: true });
-        }
-
-        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-
-        const sock = makeWASocket({
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
-            },
-            printQRInTerminal: false,
-            logger: pino({ level: 'fatal' }),
-            browser: Browsers.ubuntu('Chrome')
-        });
-
-        sock.ev.on('creds.update', saveCreds);
-
-        await delay(3000);
-        let code = await sock.requestPairingCode(num);
-        code = code?.match(/.{1,4}/g)?.join('-') || code;
-
-        return res.redirect(`/?code=${code}`);
-    } catch (err) {
-        console.error('Pairing Error:', err);
-        return res.redirect('/?error=Failed to fetch pairing code. Please try again.');
-    }
-});
-
-app.listen(PORT, "0.0.0.0", () => {
-    console.log(`⚡ BROKEN MD Web Panel running on port ${PORT}`);
-});        input { width: 90%; padding: 12px; margin-bottom: 15px; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #fff; text-align: center; font-size: 15px; outline: none; }
-        input:focus { border-color: #38bdf8; }
-        button { width: 98%; padding: 12px; border: none; border-radius: 8px; background: #22c55e; color: #fff; font-weight: bold; font-size: 15px; cursor: pointer; transition: 0.2s; }
-        button:hover { background: #16a34a; }
-        .code-box { margin-top: 20px; padding: 15px; background: #0f172a; border-radius: 8px; border: 1px dashed #38bdf8; font-size: 22px; font-weight: bold; color: #facc15; letter-spacing: 2px; }
-        .footer { margin-top: 15px; font-size: 12px; color: #64748b; }
-      </style>
-    </head>
-    <body>
-      <div class="card">
-        <img src="https://i.imgur.com/1xAJKoA.jpeg" class="logo" alt="BROKEN MD Logo">
-        <h2>⚡ BROKEN MD</h2>
-        <p>Enter your number with country code</p>
-        <form action="/pair" method="POST">
-          <input type="text" name="number" placeholder="923xxxxxxxxx" required />
-          <button type="submit">Get Pairing Code</button>
-        </form>
-        ${req.query.code ? `<div class="code-box">${req.query.code}</div>` : ''}
-        ${req.query.error ? `<p style="color: #ef4444; margin-top: 15px; font-weight: bold;">${req.query.error}</p>` : ''}
-        <div class="footer">Owner: +${OWNER_NUMBER}</div>
-      </div>
-    </body>
-    </html>
-  `);
-});
+// 1. Web Panel Interface (Home Route)
+app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html lang="en">
@@ -159,37 +59,31 @@ app.listen(PORT, "0.0.0.0", () => {
   `);
 });
 
-// 2. API Endpoint - Generate Pairing Code
-app.post("/pair", async (req, res) => {
-  let num = req.body.number;
-  if (!num) return res.redirect("/?error=Number is required");
-
-  // Number Format Cleaning
+// Helper Function for Generating Pairing Code
+async function generatePairCode(num) {
   num = num.replace(/[^0-9]/g, "");
-
-  // Create temporary session directory
   const tempSessionDir = path.join(__dirname, `./temp_sessions/session_${Date.now()}`);
 
-  try {
-    const { state, saveCreds } = await useMultiFileAuthState(tempSessionDir);
-    const sock = makeWASocket({
-      auth: state,
-      logger: pino({ level: "silent" }),
-      printQRInTerminal: false
-    });
+  const { state, saveCreds } = await useMultiFileAuthState(tempSessionDir);
+  const sock = makeWASocket({
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }))
+    },
+    logger: pino({ level: "silent" }),
+    printQRInTerminal: false,
+    browser: Browsers.ubuntu('Chrome')
+  });
 
-    sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("creds.update", saveCreds);
 
-    await delay(3000); // Socket initialization delay
+  await delay(3000);
 
-    if (!sock.authState.creds.registered) {
-      const code = await sock.requestPairingCode(num);
-      res.redirect(`/?code=${code}`);
-    } else {
-      res.redirect("/?error=Already Registered");
-    }
+  if (!sock.authState.creds.registered) {
+    let code = await sock.requestPairingCode(num);
+    code = code?.match(/.{1,4}/g)?.join('-') || code;
 
-    // Dynamic temp session cleanup after 2 minutes
+    // Cleanup temp session after 2 minutes
     setTimeout(() => {
       try {
         sock.ws.close();
@@ -197,15 +91,57 @@ app.post("/pair", async (req, res) => {
       } catch (e) {}
     }, 120000);
 
+    return { success: true, code: code };
+  } else {
+    return { success: false, error: "Already Registered" };
+  }
+}
+
+// 2. API Endpoint - GET Method (For GitHub Pages index.html frontend)
+app.get("/pair", async (req, res) => {
+  let num = req.query.number;
+  if (!num) return res.status(400).json({ error: "Number is required" });
+
+  try {
+    const result = await generatePairCode(num);
+    if (result.success) {
+      return res.json({ code: result.code });
+    } else {
+      return res.status(400).json({ error: result.error });
+    }
   } catch (err) {
-    console.log("Pairing Error:", err);
-    res.redirect("/?error=Failed to generate code. Try again.");
+    console.error("Pairing Error (GET):", err);
+    return res.status(500).json({ error: "Failed to generate pairing code" });
   }
 });
 
-// 3. Main Bot Process
+// 3. API Endpoint - POST Method (For Direct Web Panel Form Submit)
+app.post("/pair", async (req, res) => {
+  let num = req.body.number;
+  if (!num) return res.redirect("/?error=Number is required");
+
+  try {
+    const result = await generatePairCode(num);
+    if (result.success) {
+      return res.redirect(`/?code=${result.code}`);
+    } else {
+      return res.redirect(`/?error=${encodeURIComponent(result.error)}`);
+    }
+  } catch (err) {
+    console.error("Pairing Error (POST):", err);
+    return res.redirect("/?error=Failed to generate code. Try again.");
+  }
+});
+
+// 4. Main Bot Process
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState("./session");
+  const sessionDir = path.join(__dirname, './session');
+  
+  if (!fs.existsSync(sessionDir)) {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  }
+
+  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
   const sock = makeWASocket({
     auth: state,
@@ -238,7 +174,6 @@ async function startBot() {
   sock.ev.on("messages.upsert", async ({ messages }) => {
     try {
       const msg = messages[0];
-
       if (!msg.message || msg.key.fromMe) return;
 
       const text =
@@ -280,6 +215,25 @@ async function startBot() {
             "┃ 📌 .ping  - Speed test\n" +
             "┃ 📌 .alive - Check status\n" +
             "┃ 📌 .owner - Owner info\n" +
+            "┃ 📌 .menu  - List commands\n" +
+            "┃\n" +
+            "╰━━━━━━━━━━━━━━━━╯"
+        });
+      }
+    } catch (err) {
+      console.log("Command error:", err);
+    }
+  });
+}
+
+// Single Web Server Listener for Heroku
+app.listen(PORT, () => {
+  console.log(`⚡ BROKEN MD Pairing Web Panel running on port ${PORT}`);
+});
+
+// Start WhatsApp Bot
+startBot();
++
             "┃ 📌 .menu  - List commands\n" +
             "┃\n" +
             "╰━━━━━━━━━━━━━━━━╯"
