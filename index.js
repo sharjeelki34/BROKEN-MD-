@@ -58,26 +58,44 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Helper Function for Generating Pairing Code
-async function generatePairCode(num) {
+// 2. API Endpoint - GET Method (For GitHub Pages frontend & Direct link)
+app.get("/pair", async (req, res) => {
+  let num = req.query.number;
+  if (!num) return res.status(400).json({ error: "Number is required" });
+
   num = num.replace(/[^0-9]/g, "");
   const tempSessionDir = path.join(__dirname, `./temp_sessions/session_${Date.now()}`);
 
-  const { state, saveCreds } = await useMultiFileAuthState(tempSessionDir);
-  const sock = makeWASocket({
-    auth: state,
-    logger: pino({ level: "silent" }),
-    printQRInTerminal: false,
-    browser: Browsers.ubuntu('Chrome')
-  });
+  try {
+    if (!fs.existsSync(tempSessionDir)) {
+      fs.mkdirSync(tempSessionDir, { recursive: true });
+    }
 
-  sock.ev.on("creds.update", saveCreds);
-  await delay(3000);
+    const { state, saveCreds } = await useMultiFileAuthState(tempSessionDir);
+    const sock = makeWASocket({
+      auth: state,
+      logger: pino({ level: "silent" }),
+      printQRInTerminal: false,
+      browser: Browsers.ubuntu('Chrome')
+    });
 
-  if (!sock.authState.creds.registered) {
-    let code = await sock.requestPairingCode(num);
-    code = code?.match(/.{1,4}/g)?.join('-') || code;
+    sock.ev.on("creds.update", saveCreds);
 
+    // Wait for connection / socket to be ready before requesting code
+    let code = null;
+    for (let i = 0; i < 5; i++) {
+      await delay(2000);
+      try {
+        if (!sock.authState.creds.registered) {
+          code = await sock.requestPairingCode(num);
+          if (code) break;
+        }
+      } catch (e) {
+        // Retry loop if connection is still establishing
+      }
+    }
+
+    // Cleanup temp files after 2 minutes
     setTimeout(() => {
       try {
         sock.ws.close();
@@ -85,27 +103,19 @@ async function generatePairCode(num) {
       } catch (e) {}
     }, 120000);
 
-    return { success: true, code: code };
-  } else {
-    return { success: false, error: "Already Registered" };
-  }
-}
-
-// 2. API Endpoint - GET Method (For GitHub Pages frontend)
-app.get("/pair", async (req, res) => {
-  let num = req.query.number;
-  if (!num) return res.status(400).json({ error: "Number is required" });
-
-  try {
-    const result = await generatePairCode(num);
-    if (result.success) {
-      return res.json({ code: result.code });
+    if (code) {
+      code = code.match(/.{1,4}/g)?.join('-') || code;
+      return res.json({ code: code });
     } else {
-      return res.status(400).json({ error: result.error });
+      return res.status(500).json({ error: "Failed to generate pairing code. Try again." });
     }
+
   } catch (err) {
-    console.error("Pairing Error (GET):", err);
-    return res.status(500).json({ error: "Failed to generate pairing code" });
+    console.error("Pairing Error:", err);
+    try {
+      fs.rmSync(tempSessionDir, { recursive: true, force: true });
+    } catch (e) {}
+    return res.status(500).json({ error: "Internal server error during pairing." });
   }
 });
 
@@ -114,16 +124,55 @@ app.post("/pair", async (req, res) => {
   let num = req.body.number;
   if (!num) return res.redirect("/?error=Number is required");
 
+  num = num.replace(/[^0-9]/g, "");
+  const tempSessionDir = path.join(__dirname, `./temp_sessions/session_${Date.now()}`);
+
   try {
-    const result = await generatePairCode(num);
-    if (result.success) {
-      return res.redirect(`/?code=${result.code}`);
-    } else {
-      return res.redirect(`/?error=${encodeURIComponent(result.error)}`);
+    if (!fs.existsSync(tempSessionDir)) {
+      fs.mkdirSync(tempSessionDir, { recursive: true });
     }
+
+    const { state, saveCreds } = await useMultiFileAuthState(tempSessionDir);
+    const sock = makeWASocket({
+      auth: state,
+      logger: pino({ level: "silent" }),
+      printQRInTerminal: false,
+      browser: Browsers.ubuntu('Chrome')
+    });
+
+    sock.ev.on("creds.update", saveCreds);
+
+    let code = null;
+    for (let i = 0; i < 5; i++) {
+      await delay(2000);
+      try {
+        if (!sock.authState.creds.registered) {
+          code = await sock.requestPairingCode(num);
+          if (code) break;
+        }
+      } catch (e) {}
+    }
+
+    setTimeout(() => {
+      try {
+        sock.ws.close();
+        fs.rmSync(tempSessionDir, { recursive: true, force: true });
+      } catch (e) {}
+    }, 120000);
+
+    if (code) {
+      code = code.match(/.{1,4}/g)?.join('-') || code;
+      return res.redirect(`/?code=${code}`);
+    } else {
+      return res.redirect(`/?error=Failed to generate pairing code. Try again.`);
+    }
+
   } catch (err) {
-    console.error("Pairing Error (POST):", err);
-    return res.redirect("/?error=Failed to generate code. Try again.");
+    console.error("Pairing Error:", err);
+    try {
+      fs.rmSync(tempSessionDir, { recursive: true, force: true });
+    } catch (e) {}
+    return res.redirect(`/?error=Internal server error during pairing.`);
   }
 });
 
@@ -192,3 +241,4 @@ app.listen(PORT, () => {
 });
 
 startBot();
+                                         
