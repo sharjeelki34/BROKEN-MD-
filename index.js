@@ -7,7 +7,6 @@ const {
     default: makeWASocket, 
     useMultiFileAuthState, 
     delay, 
-    makeCacheableSignalKeyStore, 
     Browsers, 
     DisconnectReason 
 } = require('@whiskeysockets/baileys');
@@ -66,24 +65,19 @@ async function generatePairCode(num) {
 
   const { state, saveCreds } = await useMultiFileAuthState(tempSessionDir);
   const sock = makeWASocket({
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }))
-    },
+    auth: state,
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
     browser: Browsers.ubuntu('Chrome')
   });
 
   sock.ev.on("creds.update", saveCreds);
-
   await delay(3000);
 
   if (!sock.authState.creds.registered) {
     let code = await sock.requestPairingCode(num);
     code = code?.match(/.{1,4}/g)?.join('-') || code;
 
-    // Cleanup temp session after 2 minutes
     setTimeout(() => {
       try {
         sock.ws.close();
@@ -97,7 +91,7 @@ async function generatePairCode(num) {
   }
 }
 
-// 2. API Endpoint - GET Method (For GitHub Pages index.html frontend)
+// 2. API Endpoint - GET Method (For GitHub Pages frontend)
 app.get("/pair", async (req, res) => {
   let num = req.query.number;
   if (!num) return res.status(400).json({ error: "Number is required" });
@@ -115,7 +109,7 @@ app.get("/pair", async (req, res) => {
   }
 });
 
-// 3. API Endpoint - POST Method (For Direct Web Panel Form Submit)
+// 3. API Endpoint - POST Method (For Web Panel Form)
 app.post("/pair", async (req, res) => {
   let num = req.body.number;
   if (!num) return res.redirect("/?error=Number is required");
@@ -136,13 +130,11 @@ app.post("/pair", async (req, res) => {
 // 4. Main Bot Process
 async function startBot() {
   const sessionDir = path.join(__dirname, './session');
-  
   if (!fs.existsSync(sessionDir)) {
     fs.mkdirSync(sessionDir, { recursive: true });
   }
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-
   const sock = makeWASocket({
     auth: state,
     logger: pino({ level: "silent" }),
@@ -153,14 +145,11 @@ async function startBot() {
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect } = update;
-
     if (connection === "open") {
       console.log("✅ BROKEN MD connected successfully!");
     }
-
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
-
       if (code !== DisconnectReason.loggedOut) {
         console.log("🔄 Reconnecting...");
         startBot();
@@ -170,55 +159,26 @@ async function startBot() {
     }
   });
 
-  // Commands Handling
   sock.ev.on("messages.upsert", async ({ messages }) => {
     try {
       const msg = messages[0];
       if (!msg.message || msg.key.fromMe) return;
 
-      const text =
-        msg.message.conversation ||
-        msg.message.extendedTextMessage?.text ||
-        "";
-
+      const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
       const command = text.trim().toLowerCase();
       const jid = msg.key.remoteJid;
 
       if (command === ".ping") {
-        await sock.sendMessage(jid, {
-          text: "🏓 Pong!\n⚡ BROKEN MD is alive."
-        });
+        await sock.sendMessage(jid, { text: "🏓 Pong!\n⚡ BROKEN MD is alive." });
       }
-
       if (command === ".alive") {
-        await sock.sendMessage(jid, {
-          text:
-            "╭━━〔 ⚡ BROKEN MD 〕━━╮\n" +
-            `┃ ✅ Bot Status: Online\n` +
-            `┃ 👑 Owner: +${OWNER_NUMBER}\n` +
-            "┃ 🚀 System: Active\n" +
-            "╰━━━━━━━━━━━━━━━━╯"
-        });
+        await sock.sendMessage(jid, { text: "╭━━〔 ⚡ BROKEN MD 〕━━╮\n┃ ✅ Bot Status: Online\n┃ 👑 Owner: +" + OWNER_NUMBER + "\n┃ 🚀 System: Active\n╰━━━━━━━━━━━━━━━━╯" });
       }
-
       if (command === ".owner") {
-        await sock.sendMessage(jid, {
-          text: `👑 *Bot Owner Contact:*\nhttps://wa.me/${OWNER_NUMBER}`
-        });
+        await sock.sendMessage(jid, { text: "👑 *Bot Owner Contact:*\nhttps://wa.me/" + OWNER_NUMBER });
       }
-
       if (command === ".menu") {
-        await sock.sendMessage(jid, {
-          text:
-            "╭━━〔 ⚡ BROKEN MD 〕━━╮\n" +
-            "┃\n" +
-            "┃ 📌 .ping  - Speed test\n" +
-            "┃ 📌 .alive - Check status\n" +
-            "┃ 📌 .owner - Owner info\n" +
-            "┃ 📌 .menu  - List commands\n" +
-            "┃\n" +
-            "╰━━━━━━━━━━━━━━━━╯"
-        });
+        await sock.sendMessage(jid, { text: "╭━━〔 ⚡ BROKEN MD 〕━━╮\n┃\n┃ 📌 .ping  - Speed test\n┃ 📌 .alive - Check status\n┃ 📌 .owner - Owner info\n┃ 📌 .menu  - List commands\n┃\n╰━━━━━━━━━━━━━━━━╯" });
       }
     } catch (err) {
       console.log("Command error:", err);
@@ -226,29 +186,9 @@ async function startBot() {
   });
 }
 
-// Single Web Server Listener for Heroku
+// Start Web Server & Bot
 app.listen(PORT, () => {
-  console.log(`⚡ BROKEN MD Pairing Web Panel running on port ${PORT}`);
+  console.log(`⚡ BROKEN MD Web Panel running on port ${PORT}`);
 });
 
-// Start WhatsApp Bot
-startBot();
-+
-            "┃ 📌 .menu  - List commands\n" +
-            "┃\n" +
-            "╰━━━━━━━━━━━━━━━━╯"
-        });
-      }
-    } catch (err) {
-      console.log("Command error:", err);
-    }
-  });
-}
-
-// Web server start
-app.listen(PORT, () => {
-  console.log(`⚡ BROKEN MD Pairing Web Panel running on port ${PORT}`);
-});
-
-// Bot start
 startBot();
