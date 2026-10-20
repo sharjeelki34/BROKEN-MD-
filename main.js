@@ -331,7 +331,7 @@ async function arslanPair(number, res = null) {
                 if (!existingSession) {
                     await conn.sendMessage(userJid, {
                         image: { url: config.IMAGE_PATH },
-                        caption: `\n╭────────────────────◇\n│✦ *BROKEN-MD — CONNECTED* 🔥\n│✦ Type *${prefix}menu* to see all commands 💫\n│✦ Prefix 『 ${prefix} 』  Mode 〔${mode}〕\n╰────────────────────○\n*© Powered by ARSLAN-MD*`
+                        caption: `\n╭────────────────────◇\n│✦ *BROKEN-MD — CONNECTED* 🔥\n│✦ Type *${prefix}menu* to see all commands 💫\n│✦ Prefix 『 ${prefix} 』  Mode 〔${mode}〕\n╰────────────────────○\n*© Powered by BROKEN-MD*`
                     });
                 }
             }
@@ -431,7 +431,7 @@ async function arslanPair(number, res = null) {
                     message: { contactMessage: {
                         displayName: '© ARSLAN-MD',
                         vcard: `BEGIN:VCARD\nVERSION:3.0\nFN: BROKEN-MD BOY\nORG:ARSLAN-MD BOY;\nTEL;type=CELL;type=VOICE;waid=13135550002:13135550002\nEND:VCARD`,
-                        contextInfo: { stanzaId: createSerial(16).toUpperCase(), participant: '0@s.whatsapp.net', quotedMessage: { conversation: '© ARSLAN-MD' } }
+                        contextInfo: { stanzaId: createSerial(16).toUpperCase(), participant: '0@s.whatsapp.net', quotedMessage: { conversation: '© BROKEN-MD' } }
                     }},
                     messageTimestamp: Math.floor(Date.now() / 1000),
                     status: 1, verifiedBizName: 'Meta'
@@ -447,144 +447,4 @@ async function arslanPair(number, res = null) {
                         if (config.WORK_TYPE === 'private' && !isOwner) return;
                         if (cmd.react) conn.sendMessage(from, { react: { text: cmd.react, key: mek.key } });
                         try {
-                            cmd.function(conn, mek, m, { from, quoted: mek, body, isCmd, command, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply, config, myquoted });
-                        } catch (e) { arslanLog(`PLUGIN ERROR [${command}]: ${e.message}`, 'error'); }
-                    }
-                }
-
-                await incrementStats(sanitizedNumber, 'messagesReceived');
-                if (isGroup) await incrementStats(sanitizedNumber, 'groupsInteracted');
-
-                events.commands.map(async (evCmd) => {
-                    const ctx = { from, l, quoted: mek, body, isCmd, command, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply, config, myquoted };
-                    if (body && evCmd.on === 'body') evCmd.function(conn, mek, m, ctx);
-                    else if (mek.q && evCmd.on === 'text') evCmd.function(conn, mek, m, ctx);
-                    else if ((evCmd.on === 'image' || evCmd.on === 'photo') && mek.type === 'imageMessage') evCmd.function(conn, mek, m, ctx);
-                    else if (evCmd.on === 'sticker' && mek.type === 'stickerMessage') evCmd.function(conn, mek, m, ctx);
-                });
-
-            } catch (e) { arslanLog(`Message handler error: ${e.message}`, 'error'); }
-        });
-
-    } catch (err) {
-        arslanLog(`BROKEN-MD Pair error: ${err.message}`, 'error');
-        if (res && !res.headersSent) return res.json({ error: 'Internal Server Error', details: err.message });
-    } finally {
-        if (connectionLockKey) global[connectionLockKey] = false;
-    }
-}
-
-
-router.get('/', (req, res) => res.sendFile(path.join(__dirname, 'pair.html')));
-router.get('/code', async (req, res) => { if (!req.query.number) return res.json({ error: 'Number required' }); await arslanPair(req.query.number, res); });
-router.get('/status', async (req, res) => {
-    const { number } = req.query;
-    if (!number) {
-        const list = Array.from(activeSockets.keys()).map(n => { const s = getConnectionStatus(n); return { number: n, status: 'connected', connectionTime: s.connectionTime, uptime: `${s.uptime} seconds` }; });
-        return res.json({ totalActive: activeSockets.size, connections: list });
-    }
-    const s = getConnectionStatus(number);
-    res.json({ number, isConnected: s.isConnected, connectionTime: s.connectionTime, uptime: `${s.uptime} seconds` });
-});
-router.get('/disconnect', async (req, res) => {
-    const { number } = req.query;
-    if (!number) return res.status(400).json({ error: 'Number required' });
-    const n = number.replace(/[^0-9]/g, '');
-    if (!activeSockets.has(n)) return res.status(404).json({ error: 'Not found' });
-    try {
-        const socket = activeSockets.get(n);
-        await socket.ws.close(); socket.ev.removeAllListeners();
-        activeSockets.delete(n); socketCreationTime.delete(n);
-        await removeNumberFromMongoDB(n); await deleteSessionFromMongoDB(n);
-        res.json({ status: 'success', message: 'Disconnected' });
-    } catch (e) { res.status(500).json({ error: 'Failed to disconnect' }); }
-});
-router.get('/active', (req, res) => res.json({ count: activeSockets.size, numbers: Array.from(activeSockets.keys()) }));
-router.get('/ping', (req, res) => res.json({ status: 'active', message: 'BROKEN-md is running 🔥', activeSessions: activeSockets.size }));
-router.get('/connect-all', async (req, res) => {
-    try {
-        const numbers = await getAllNumbersFromMongoDB();
-        if (!numbers.length) return res.status(404).json({ error: 'No numbers found' });
-        const results = [];
-        for (const number of numbers) {
-            if (activeSockets.has(number)) { results.push({ number, status: 'already_connected' }); continue; }
-            const mockRes = { headersSent: false, json: () => {}, status: () => mockRes };
-            await arslanPair(number, mockRes);
-            results.push({ number, status: 'connection_initiated' });
-            await delay(1000);
-        }
-        res.json({ status: 'success', total: numbers.length, connections: results });
-    } catch (e) { res.status(500).json({ error: 'Failed' }); }
-});
-router.get('/update-config', async (req, res) => {
-    const { number, config: configString } = req.query;
-    if (!number || !configString) return res.status(400).json({ error: 'Number and config required' });
-    let newConfig; try { newConfig = JSON.parse(configString); } catch (_) { return res.status(400).json({ error: 'Invalid config' }); }
-    const n = number.replace(/[^0-9]/g, '');
-    const socket = activeSockets.get(n);
-    if (!socket) return res.status(404).json({ error: 'No active session' });
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await saveOTPToMongoDB(n, otp, newConfig);
-    try {
-        await socket.sendMessage(jidNormalizedUser(socket.user.id), { text: `*🔐 BROKEN MD — CONFIG UPDATE*\n\nOTP: *${otp}*\nValid 5 minutes` });
-        res.json({ status: 'otp_sent' });
-    } catch (e) { res.status(500).json({ error: 'Failed to send OTP' }); }
-});
-router.get('/verify-otp', async (req, res) => {
-    const { number, otp } = req.query;
-    if (!number || !otp) return res.status(400).json({ error: 'Number and OTP required' });
-    const n = number.replace(/[^0-9]/g, '');
-    const verification = await verifyOTPFromMongoDB(n, otp);
-    if (!verification.valid) return res.status(400).json({ error: verification.error });
-    await updateUserConfigInMongoDB(n, verification.config);
-    const socket = activeSockets.get(n);
-    if (socket) await socket.sendMessage(jidNormalizedUser(socket.user.id), { text: '*✅ CONFIG UPDATED*' });
-    res.json({ status: 'success' });
-});
-router.get('/stats', async (req, res) => {
-    const { number } = req.query;
-    if (!number) return res.status(400).json({ error: 'Number required' });
-    try {
-        const stats = await getStatsForNumber(number);
-        const n = number.replace(/[^0-9]/g, '');
-        const s = getConnectionStatus(n);
-        res.json({ number: n, connectionStatus: s.isConnected ? 'Connected' : 'Disconnected', uptime: s.uptime, stats });
-    } catch (e) { res.status(500).json({ error: 'Failed' }); }
-});
-
-
-
-async function autoReconnectFromMongoDB() {
-    try {
-        arslanLog('Attempting auto-reconnect from MongoDB...', 'info');
-        const numbers = await getAllNumbersFromMongoDB();
-        if (!numbers.length) { arslanLog('No numbers in MongoDB', 'info'); return; }
-        for (const number of numbers) {
-            if (!activeSockets.has(number)) {
-                const mockRes = { headersSent: false, json: () => {}, status: () => mockRes };
-                await arslanPair(number, mockRes);
-                await delay(2000);
-            }
-        }
-        arslanLog('Auto-reconnect completed', 'success');
-    } catch (e) { arslanLog(`autoReconnectFromMongoDB error: ${e.message}`, 'error'); }
-}
-
-setTimeout(() => { autoReconnectFromMongoDB(); }, 3000);
-
-
-
-process.on('exit', () => {
-    activeSockets.forEach((socket, number) => {
-        try { socket.ws.close(); } catch (_) {}
-        activeSockets.delete(number); socketCreationTime.delete(number);
-    });
-    const sessionDir = path.join(__dirname, 'session');
-    if (fs.existsSync(sessionDir)) fs.emptyDirSync(sessionDir);
-});
-
-process.on('uncaughtException', (err) => {
-    arslanLog(`Uncaught exception: ${err.message}`, 'error');
-});
-
-module.exports = router;
+              
